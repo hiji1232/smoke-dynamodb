@@ -18,6 +18,7 @@
 import Foundation
 import XCTest
 @testable import SmokeDynamoDB
+import NIO
 
 class DynamoDBCompositePrimaryKeyTableClobberVersionedItemWithHistoricalRowTests: XCTestCase {
     
@@ -170,9 +171,76 @@ class DynamoDBCompositePrimaryKeyTableClobberVersionedItemWithHistoricalRowTests
         XCTAssertTrue(isSecondCallCompleted)
     }
     
+    func testClobberVersionedItemWithHistoricalRowFutureAsync() throws {
+        let payload1 = TestTypeA(firstly: "firstly", secondly: "secondly")
+        let partitionKey = "partitionId"
+        let historicalPartitionPrefix = "historical"
+        let historicalPartitionKey = "\(historicalPartitionPrefix).\(partitionKey)"
+        let eventLoop = MultiThreadedEventLoopGroup(numberOfThreads: 1).next()
+        
+        func generateSortKey(withVersion version: Int) -> String {
+            let prefix = String(format: "v%05d", version)
+            return [prefix, "sortId"].dynamodbKey
+        }
+        
+        let table = InMemoryDynamoDBCompositePrimaryKeyTable()
+        
+        try table.clobberVersionedItemWithHistoricalRowAsync(forPrimaryKey: partitionKey,
+                                                             andHistoricalKey: historicalPartitionKey,
+                                                             item: payload1,
+                                                             primaryKeyType: StandardPrimaryKeyAttributes.self,
+                                                             generateSortKey: generateSortKey,
+                                                             on: eventLoop).wait()
+        
+        // the v0 row, copy of version 1
+        let key1 = StandardCompositePrimaryKey(partitionKey: partitionKey, sortKey: generateSortKey(withVersion: 0))
+        let item1: StandardTypedDatabaseItem<RowWithItemVersion<TestTypeA>> = try table.getItemSync(forKey: key1)!
+        XCTAssertEqual(1, item1.rowValue.itemVersion)
+        XCTAssertEqual(1, item1.rowStatus.rowVersion)
+        XCTAssertEqual(payload1, item1.rowValue.rowValue)
+        
+        // the v1 row, has version 1
+        let key2 = StandardCompositePrimaryKey(partitionKey: historicalPartitionKey, sortKey: generateSortKey(withVersion: 1))
+        let item2: StandardTypedDatabaseItem<RowWithItemVersion<TestTypeA>> = try table.getItemSync(forKey: key2)!
+        XCTAssertEqual(1, item2.rowValue.itemVersion)
+        XCTAssertEqual(1, item2.rowStatus.rowVersion)
+        XCTAssertEqual(payload1, item2.rowValue.rowValue)
+        
+        let payload2 = TestTypeA(firstly: "thirdly", secondly: "fourthly")
+        
+        try table.clobberVersionedItemWithHistoricalRowAsync(forPrimaryKey: partitionKey,
+                                                            andHistoricalKey: historicalPartitionKey,
+                                                            item: payload2,
+                                                            primaryKeyType: StandardPrimaryKeyAttributes.self,
+                                                            generateSortKey: generateSortKey,
+                                                            on: eventLoop).wait()
+        
+        // the v0 row, copy of version 2
+        let key3 = StandardCompositePrimaryKey(partitionKey: partitionKey, sortKey: generateSortKey(withVersion: 0))
+        let item3: StandardTypedDatabaseItem<RowWithItemVersion<TestTypeA>> = try table.getItemSync(forKey: key3)!
+        XCTAssertEqual(2, item3.rowValue.itemVersion)
+        XCTAssertEqual(2, item3.rowStatus.rowVersion)
+        XCTAssertEqual(payload2, item3.rowValue.rowValue)
+        
+        // the v1 row, still has version 1
+        let key4 = StandardCompositePrimaryKey(partitionKey: historicalPartitionKey, sortKey: generateSortKey(withVersion: 1))
+        let item4: StandardTypedDatabaseItem<RowWithItemVersion<TestTypeA>> = try table.getItemSync(forKey: key4)!
+        XCTAssertEqual(1, item4.rowValue.itemVersion)
+        XCTAssertEqual(1, item4.rowStatus.rowVersion)
+        XCTAssertEqual(payload1, item4.rowValue.rowValue)
+        
+        // the v2 row, has version 2
+        let key5 = StandardCompositePrimaryKey(partitionKey: historicalPartitionKey, sortKey: generateSortKey(withVersion: 2))
+        let item5: StandardTypedDatabaseItem<RowWithItemVersion<TestTypeA>> = try table.getItemSync(forKey: key5)!
+        XCTAssertEqual(2, item5.rowValue.itemVersion)
+        XCTAssertEqual(1, item5.rowStatus.rowVersion)
+        XCTAssertEqual(payload2, item5.rowValue.rowValue)
+    }
+    
     static var allTests = [
         ("testClobberVersionedItemWithHistoricalRowSync", testClobberVersionedItemWithHistoricalRowSync),
         ("testClobberVersionedItemWithHistoricalRowAsync",
-         testClobberVersionedItemWithHistoricalRowAsync)
+         testClobberVersionedItemWithHistoricalRowAsync),
+        ("testClobberVersionedItemWithHistoricalRowFutureAsync", testClobberVersionedItemWithHistoricalRowFutureAsync),
     ]
 }
